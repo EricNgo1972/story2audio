@@ -45,7 +45,7 @@ if sys.platform == "win32":
 # ---------------------------------------------------------------------------
 # Directories & Setup
 # ---------------------------------------------------------------------------
-VERSION = os.environ.get("APP_VERSION", "v3.0.0")
+VERSION = os.environ.get("APP_VERSION", "v3.1.0")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -1377,11 +1377,11 @@ async def get_cues(cache_id: str):
     cache_id = validate_cache_id(cache_id)
     meta = load_cache_meta(cache_id)
     if not meta or meta.get("engine") != "edge":
-        return JSONResponse({"cues": [], "done": True})
+        return JSONResponse({"cues": [], "done": True, "subtitle_supported": False})
 
     cues = load_cues_json(cache_id)
     if cues:
-        return {"cues": cues, "done": True}
+        return {"cues": cues, "done": True, "subtitle_supported": True}
 
     jsonl_path = get_cues_jsonl_path(cache_id)
     partial: List[dict] = []
@@ -1402,11 +1402,11 @@ async def get_cues(cache_id: str):
 
     status = get_effective_status(cache_id)
     if status and status.get("status") in {"completed", "failed"}:
-        result: dict = {"cues": partial, "done": True}
+        result: dict = {"cues": partial, "done": True, "subtitle_supported": True}
         if status.get("status") == "failed":
             result["error"] = status.get("error", "generation failed")
         return result
-    return {"cues": partial, "done": False}
+    return {"cues": partial, "done": False, "subtitle_supported": True}
 
 
 @app.get("/tts/cues/stream/{cache_id}")
@@ -1415,7 +1415,7 @@ async def stream_cues_live(cache_id: str, request: Request):
     meta = load_cache_meta(cache_id)
     if not meta or meta.get("engine") != "edge":
         async def empty():
-            payload = json.dumps({"done": True}, ensure_ascii=False)
+            payload = json.dumps({"done": True, "subtitle_supported": False}, ensure_ascii=False)
             yield f"event: complete\ndata: {payload}\n\n"
 
         return StreamingResponse(
@@ -1516,7 +1516,7 @@ async def stream_cues_live(cache_id: str, request: Request):
                     stable_completed_checks += 1
 
                 if stable_completed_checks >= 2:
-                    payload = json.dumps({"done": True}, ensure_ascii=False)
+                    payload = json.dumps({"done": True, "subtitle_supported": True}, ensure_ascii=False)
                     yield f"event: complete\ndata: {payload}\n\n"
                     break
             else:
