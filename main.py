@@ -322,11 +322,16 @@ def get_effective_status(cache_id: str) -> Optional[dict]:
         return status
 
     if is_cache_valid(cache_id):
+        # Infer subtitle support from engine stored in meta
+        subtitle_supported = meta.get("subtitle_supported", meta.get("engine") == "edge") if meta else False
+        subtitle_ready = meta.get("subtitle_ready", subtitle_supported) if meta else False
         return {
             "status": "completed",
             "progress": 1,
             "total": 1,
             "file_size": file_size,
+            "subtitle_supported": subtitle_supported,
+            "subtitle_ready": subtitle_ready,
         }
 
     return None
@@ -1206,8 +1211,19 @@ async def favicon():
 
 @app.get("/tts/voices")
 async def get_voices():
+    gtts_voices = {}
+    for lang in SUPPORTED_LANGUAGES:
+        gtts_lang_code = GTTS_LANG_MAP.get(lang, lang)
+        gtts_voices[lang] = [
+            {
+                "value": f"gtts-{gtts_lang_code}",
+                "label": f"Google TTS ({gtts_lang_code.upper()})",
+                "engine": "gtts",
+            }
+        ]
     return {
         "voices": EDGE_VOICES,
+        "gtts_voices": gtts_voices,
         "languages": SUPPORTED_LANGUAGES,
     }
 
