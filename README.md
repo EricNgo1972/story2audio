@@ -33,6 +33,12 @@ docker compose up -d --build
 ```
 Truy cập `http://localhost:8000` để sử dụng.
 
+**Dùng image dựng sẵn từ GHCR:**
+```yaml
+image: ghcr.io/dvchd/story2audio:latest
+```
+Không cần clone repo hay build — chỉ cần kéo image và chạy.
+
 **Cài đặt thủ công:**
 ```bash
 # Cài đặt dependency
@@ -71,6 +77,48 @@ uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 2. Chọn loại **Docker Compose**.
 3. Cấu hình biến môi trường (nếu cần).
 4. Nhấn **Deploy**.
+
+## 🐳 Docker Image
+
+Image dựng sẵn có sẵn trên GitHub Container Registry:
+
+```
+ghcr.io/dvchd/story2audio:latest
+```
+
+Bạn có thể kéo và chạy trực tiếp mà không cần build từ source:
+
+```bash
+docker pull ghcr.io/dvchd/story2audio:latest
+docker run -p 8000:8000 ghcr.io/dvchd/story2audio:latest
+```
+
+## 🔗 Tích hợp với Không Dịch
+
+[Không Dịch](https://khongdich.com) sử dụng story2audio làm **sidecar** cho chức năng text-to-speech. Cách hoạt động:
+
+- Đặt biến môi trường `TTS_URL` trỏ đến story2audio service.
+- Trong Docker internal network: `TTS_URL=http://story2audio:8000`
+- Demo công khai: `TTS_URL=https://story2audio.hoctuthien.com`
+- Backend Rust của khongdich proxy tất cả các TTS API endpoint thông qua story2audio.
+
+Ví dụ cấu hình trong `docker-compose.yml`:
+
+```yaml
+services:
+  khongdich:
+    environment:
+      - TTS_URL=http://story2audio:8000
+    depends_on:
+      - story2audio
+
+  story2audio:
+    image: ghcr.io/dvchd/story2audio:latest
+```
+
+## ⚙️ CI/CD
+
+GitHub Actions tự động build và push Docker image lên **GHCR** (GitHub Container Registry) mỗi khi có push lên nhánh `main`. Điều này đảm bảo image `ghcr.io/dvchd/story2audio:latest` luôn chứa phiên bản mới nhất của ứng dụng.
 
 ---
 
