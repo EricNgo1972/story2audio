@@ -95,8 +95,8 @@ _generation_locks: Dict[str, asyncio.Lock] = {}
 # ---------------------------------------------------------------------------
 EDGE_VOICES: Dict[str, List[Dict[str, str]]] = {
     "vi": [
-        {"value": "vi-VN-HoaiMyNeural", "label": "Hoài Mỹ (Nữ, Nam)"},
-        {"value": "vi-VN-NamMinhNeural", "label": "Nam Minh (Nam, Nam)"},
+        {"value": "vi-VN-HoaiMyNeural", "label": "Hoài Mỹ (Nữ miền Nam)"},
+        {"value": "vi-VN-NamMinhNeural", "label": "Nam Minh (Nam miền Bắc)"},
     ],
     "en": [
         {"value": "en-US-AriaNeural", "label": "Aria (Female, US)"},
@@ -1211,7 +1211,7 @@ async def favicon():
 
 @app.get("/tts/voices")
 async def get_voices():
-    gtts_labels = {"vi": "Google TTS (Nữ, Bắc)"}
+    gtts_labels = {"vi": "Google TTS (Nữ miền Bắc)"}
     gtts_voices = {}
     for lang in SUPPORTED_LANGUAGES:
         gtts_lang_code = GTTS_LANG_MAP.get(lang, lang)
