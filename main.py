@@ -933,36 +933,76 @@ def mp3_duration_seconds(data: bytes) -> float:
 # ---------------------------------------------------------------------------
 # Audio engine helpers
 # ---------------------------------------------------------------------------
-async def edge_tts_to_audio_and_words(text: str, voice: str) -> Tuple[bytes, List[dict]]:
+async def edge_tts_to_audio_and_words(text: str, voice: str, max_retries: int = 3) -> Tuple[bytes, List[dict]]:
     """
     Trả về:
     - audio bytes
     - danh sách WordBoundary / SentenceBoundary đã chuẩn hóa thành start/end/text
+
+    Includes retry logic for NoAudioReceived — Microsoft's Edge TTS WebSocket
+    intermittently returns no audio even for valid text. Retry up to max_retries
+    times with exponential backoff before giving up on this chunk.
     """
-    communicate = edge_tts.Communicate(text, voice, proxy=PROXY)
-    audio_parts: List[bytes] = []
-    words: List[dict] = []
+    for attempt in range(max_retries):
+        try:
+            communicate = edge_tts.Communicate(text, voice, proxy=PROXY)
+            audio_parts: List[bytes] = []
+            words: List[dict] = []
 
-    async for chunk in communicate.stream():
-        chunk_type = chunk.get("type")
-        if chunk_type == "audio":
-            audio_parts.append(chunk["data"])
-        elif chunk_type in {"WordBoundary", "SentenceBoundary"}:
-            try:
-                start_sec = ticks_to_seconds(int(chunk.get("offset", 0)))
-                duration_sec = ticks_to_seconds(int(chunk.get("duration", 0)))
-                text_part = (chunk.get("text") or "").strip()
-                if text_part:
-                    words.append({
-                        "type": chunk_type,
-                        "text": text_part,
-                        "start": start_sec,
-                        "end": start_sec + max(0.01, duration_sec),
-                    })
-            except Exception:
-                continue
+            async for chunk in communicate.stream():
+                chunk_type = chunk.get("type")
+                if chunk_type == "audio":
+                    audio_parts.append(chunk["data"])
+                elif chunk_type in {"WordBoundary", "SentenceBoundary"}:
+                    try:
+                        start_sec = ticks_to_seconds(int(chunk.get("offset", 0)))
+                        duration_sec = ticks_to_seconds(int(chunk.get("duration", 0)))
+                        text_part = (chunk.get("text") or "").strip()
+                        if text_part:
+                            words.append({
+                                "type": chunk_type,
+                                "text": text_part,
+                                "start": start_sec,
+                                "end": start_sec + max(0.01, duration_sec),
+                            })
+                    except Exception:
+                        continue
 
-    return b"".join(audio_parts), words
+            audio = b"".join(audio_parts)
+            if audio:
+                return audio, words
+
+            # No audio received but no exception — treat same as NoAudioReceived
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                logger.warning(
+                    "Edge TTS returned empty audio (attempt %d/%d), retrying in %ds for text: %r",
+                    attempt + 1, max_retries, wait, text[:80],
+                )
+                await asyncio.sleep(wait)
+            else:
+                logger.warning(
+                    "Edge TTS returned empty audio after %d retries for text: %r",
+                    max_retries, text[:80],
+                )
+                return b"", []
+
+        except edge_tts.exceptions.NoAudioReceived:
+            if attempt < max_retries - 1:
+                wait = 2 ** (attempt + 1)
+                logger.warning(
+                    "NoAudioReceived (attempt %d/%d), retrying in %ds for text: %r",
+                    attempt + 1, max_retries, wait, text[:80],
+                )
+                await asyncio.sleep(wait)
+            else:
+                logger.warning(
+                    "NoAudioReceived after %d retries for text: %r",
+                    max_retries, text[:80],
+                )
+                return b"", []
+
+    return b"", []
 
 
 def gtts_to_bytes(text: str, lang: str = "vi") -> bytes:
@@ -1080,7 +1120,14 @@ async def generate_chunks(
                     words = []
 
                 if not audio:
-                    raise RuntimeError(f"Empty audio returned for chunk {i + 1}/{total}")
+                    # Skip chunk that produced no audio (e.g. punctuation-only text,
+                    # or Edge TTS intermittent failure after retries exhausted).
+                    # Don't abort the entire generation — just log and continue.
+                    logger.warning(
+                        "Skipping chunk %d/%d (no audio produced): %r",
+                        i + 1, total, chunk_text[:80],
+                    )
+                    continue
 
                 raw_for_duration = audio
                 if i > 0:
