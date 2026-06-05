@@ -282,6 +282,10 @@ def is_cache_valid(cache_id: str, require_subtitles: bool = False) -> bool:
     if not meta or meta.get("status") != "completed":
         return False
 
+    # Partial audio (some chunks were skipped) is NOT valid — should be regenerated
+    if meta.get("skipped_chunks", 0) > 0:
+        return False
+
     expected_size = meta.get("file_size")
     if expected_size is None:
         return False
@@ -310,7 +314,7 @@ def get_effective_status(cache_id: str) -> Optional[dict]:
     file_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
 
     in_mem = generation_status.get(cache_id)
-    if in_mem and in_mem.get("status") in {"queued", "processing"}:
+    if in_mem and in_mem.get("status") in {"queued", "processing", "partial"}:
         status = dict(in_mem)
         status["file_size"] = file_size
         return status
@@ -1046,6 +1050,7 @@ async def generate_chunks(
         cues_all: List[dict] = []
         global_audio_sec = 0.0
         cue_index = 0
+        skipped_chunks = 0
 
         require_subtitles = engine == "edge"
         if is_cache_valid(cache_id, require_subtitles=require_subtitles):
@@ -1123,6 +1128,7 @@ async def generate_chunks(
                     # Skip chunk that produced no audio (e.g. punctuation-only text,
                     # or Edge TTS intermittent failure after retries exhausted).
                     # Don't abort the entire generation — just log and continue.
+                    skipped_chunks += 1
                     logger.warning(
                         "Skipping chunk %d/%d (no audio produced): %r",
                         i + 1, total, chunk_text[:80],
@@ -1188,13 +1194,15 @@ async def generate_chunks(
                 write_text_atomic(get_vtt_path(cache_id), cues_to_vtt(cues_all))
                 subtitle_ready = True
 
+            final_status = "partial" if skipped_chunks > 0 else "completed"
             save_cache_meta(
                 cache_id,
                 {
-                    "status": "completed",
+                    "status": final_status,
                     "progress": total,
                     "total": total,
                     "file_size": final_size,
+                    "skipped_chunks": skipped_chunks,
                     "text_hash": md5_short(text),
                     "voice": voice,
                     "engine": engine,
@@ -1205,7 +1213,19 @@ async def generate_chunks(
                     "duration_seconds": round(global_audio_sec, 3),
                 },
             )
-            generation_status.pop(cache_id, None)
+            if final_status == "completed":
+                generation_status.pop(cache_id, None)
+            else:
+                generation_status[cache_id] = {
+                    "status": "partial",
+                    "progress": total,
+                    "total": total,
+                    "skipped_chunks": skipped_chunks,
+                    "subtitle_supported": engine == "edge",
+                    "subtitle_ready": subtitle_ready,
+                    "subtitle_cues": len(cues_all),
+                    "duration_seconds": round(global_audio_sec, 3),
+                }
 
         except Exception as exc:
             err = f"{type(exc).__name__}: {exc}"
@@ -1343,6 +1363,64 @@ async def start_tts(background_tasks: BackgroundTasks, request: TTSRequest):
         "cache_id": cache_id,
         "status": "started",
         "estimated_chunks": len(chunk_preview),
+        "subtitle_supported": engine == "edge",
+        "subtitle_ready": False,
+    }
+
+
+
+
+@app.post("/tts/regenerate")
+async def regenerate_tts(background_tasks: BackgroundTasks, request: TTSRequest):
+    """Force re-generate audio: delete existing cache, then start fresh generation."""
+    text = normalize_text(request.text)
+    if not text:
+        raise HTTPException(status_code=400, detail="Text must not be empty")
+
+    engine = validate_engine(request.engine)
+    language = validate_language(request.language)
+    voice = validate_voice(language, request.voice, engine)
+
+    cache_id = get_cache_id(text, voice, engine, language)
+
+    # Clean up any existing cache (completed, partial, failed, or incomplete)
+    cleanup_incomplete_cache(cache_id)
+    # Also remove from in-memory status
+    generation_status.pop(cache_id, None)
+
+    chunk_preview = split_text_into_chunks(text, language=language)
+
+    generation_status[cache_id] = {
+        "status": "queued",
+        "progress": 0,
+        "total": len(chunk_preview),
+        "subtitle_supported": engine == "edge",
+        "subtitle_ready": False,
+        "subtitle_cues": 0,
+    }
+    save_cache_meta(
+        cache_id,
+        {
+            "status": "queued",
+            "progress": 0,
+            "total": len(chunk_preview),
+            "text_hash": md5_short(text),
+            "voice": voice,
+            "engine": engine,
+            "language": language,
+            "subtitle_supported": engine == "edge",
+            "subtitle_ready": False,
+            "subtitle_cues": 0,
+        },
+    )
+
+    background_tasks.add_task(generate_chunks, text, voice, engine, cache_id, language, chunk_preview)
+
+    return {
+        "cache_id": cache_id,
+        "status": "started",
+        "estimated_chunks": len(chunk_preview),
+        "regenerated": True,
         "subtitle_supported": engine == "edge",
         "subtitle_ready": False,
     }
