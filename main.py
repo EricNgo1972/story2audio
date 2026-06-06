@@ -159,8 +159,34 @@ MULTILANG_SENTENCE_RE = re.compile(
     re.S,
 )
 PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n+", re.M)
-SOFT_SPLIT_RE = re.compile(r"(?<=[,;:，、；：])")
+SOFT_SPLIT_RE = re.compile(r"(?<=[,;:…–—，、；：])")
 SENTENCE_END_RE = re.compile(r"[.!?…。！？][\"'”’»」』）】]*$")
+
+
+# ---------------------------------------------------------------------------
+# Vietnamese abbreviation protection
+# ---------------------------------------------------------------------------
+# Placeholder character used to temporarily mask abbreviation periods.
+# We use U+E000 (Private Use Area) which never appears in normal text.
+_ABBREV_PLACEHOLDER = "\ue000"
+
+# Regex patterns for Vietnamese abbreviations where a period is NOT a sentence
+# boundary. Vietnamese abbreviations use mixed case: PGS, TS, Tp, ThS, KTV, ĐT…
+# Pattern: word boundary + 2-5 letter abbreviation (mixed case allowed) + period
+_ABBREV_WORD = r"[A-ZĐ][A-Za-zĐđÀ-ỹ]{1,5}"
+_VI_ABBREV_COMPOUND = re.compile(rf"\b({_ABBREV_WORD})\.({_ABBREV_WORD})\.")
+_VI_ABBREV_BEFORE_CAPITAL = re.compile(rf"\b({_ABBREV_WORD})\.\s+(?=[A-ZĐÀ-Ỹ])")
+_VI_ABBREV_BEFORE_PUNCT = re.compile(rf"\b({_ABBREV_WORD})\.(?=[,;\n])")
+# Abbreviation before a lowercase word — this happens when the abbreviation
+# is followed by a common noun, e.g. "KTV. phòng", "ĐT. viễn thông"
+# Only match if the word after is short enough to be a common noun (≤3 words).
+# We use a whitelist of common abbreviations that precede lowercase words.
+_VI_ABBREV_BEFORE_LOWER = re.compile(
+    rf"\b(Tp|KTV|ĐT|CN|ĐH|ĐC|UB|UBND|TT|BV|CA|CQ|NV|NS|BCH|HĐ|THPT)\.\s+(?=[a-zà-ỳ])"
+)
+
+# Restore pattern: turn placeholder back into period
+_ABBREV_RESTORE_RE = re.compile(_ABBREV_PLACEHOLDER)
 
 # ---------------------------------------------------------------------------
 # Pydantic
@@ -425,13 +451,35 @@ def split_paragraphs(text: str) -> List[str]:
     return [p.strip() for p in PARAGRAPH_SPLIT_RE.split(text) if p.strip()]
 
 
+def _protect_abbreviations(text: str) -> str:
+    """Replace periods in Vietnamese abbreviations with a placeholder to prevent
+    sentence splitting at abbreviation boundaries."""
+    P = _ABBREV_PLACEHOLDER
+    # Compound: PGS.TS. → PGS\ue000TS\ue000
+    text = _VI_ABBREV_COMPOUND.sub(lambda m: m.group(1) + P + m.group(2) + P, text)
+    # Before capital: TS. Nguyễn → TS\ue000 Nguyễn
+    text = _VI_ABBREV_BEFORE_CAPITAL.sub(lambda m: m.group(1) + P + " ", text)
+    # Before lowercase (whitelist): KTV. phòng → KTV\ue000 phòng
+    text = _VI_ABBREV_BEFORE_LOWER.sub(lambda m: m.group(1) + P + " ", text)
+    # Before punctuation: TS., → TS\ue000,
+    text = _VI_ABBREV_BEFORE_PUNCT.sub(lambda m: m.group(1) + P, text)
+    return text
+
+
+def _restore_abbreviations(text: str) -> str:
+    """Restore placeholder characters back to periods after sentence splitting."""
+    return _ABBREV_RESTORE_RE.sub(".", text)
+
+
 def split_sentences_multilang(text: str) -> List[str]:
     text = normalize_text(text)
     if not text:
         return []
+    # Protect abbreviation periods before splitting
+    text = _protect_abbreviations(text)
     matches = [m.group().strip() for m in MULTILANG_SENTENCE_RE.finditer(text)]
-    sentences = [s for s in matches if s]
-    return sentences or [text]
+    sentences = [_restore_abbreviations(s) for s in matches if s]
+    return sentences or [_restore_abbreviations(text)]
 
 
 def hard_cut_text(text: str, limit: int) -> List[str]:
@@ -1115,73 +1163,158 @@ async def generate_chunks(
 
         loop = asyncio.get_running_loop()
 
+        # Concurrency limit for Edge TTS — 2 parallel connections.
+        # More than 2 risks rate-limiting by Microsoft's WebSocket server.
+        _EDGE_CONCURRENCY = 2
+        edge_semaphore = asyncio.Semaphore(_EDGE_CONCURRENCY) if engine == "edge" else None
+
+        async def _gen_edge_chunk(idx: int, chunk_text: str) -> Tuple[int, bytes, List[dict]]:
+            """Generate a single Edge TTS chunk with semaphore-gated concurrency."""
+            async with edge_semaphore:  # type: ignore[misc]
+                audio, words = await edge_tts_to_audio_and_words(chunk_text, voice)
+            return idx, audio, words
+
         try:
-            for i, chunk_text in enumerate(chunks):
-                if engine == "edge":
-                    audio, words = await edge_tts_to_audio_and_words(chunk_text, voice)
-                else:
+            # ── Edge TTS: pipeline with concurrent prefetch ──
+            if engine == "edge":
+                # We process chunks in order, but prefetch up to _EDGE_CONCURRENCY
+                # chunks ahead so network I/O overlaps with audio assembly.
+                pending: Dict[asyncio.Task, int] = {}  # task → chunk index
+                next_to_assemble = 0
+                # Buffer for out-of-order results: index → (audio, words)
+                result_buffer: Dict[int, Tuple[bytes, List[dict]]] = {}
+
+                # Seed initial prefetch tasks
+                prefetch_count = min(_EDGE_CONCURRENCY, total)
+                for i in range(prefetch_count):
+                    task = asyncio.create_task(_gen_edge_chunk(i, chunks[i]))
+                    pending[task] = i
+
+                while next_to_assemble < total:
+                    # Collect any completed tasks
+                    done, _ = await asyncio.wait(pending.keys(), return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:
+                        idx, audio, words = task.result()
+                        result_buffer[idx] = (audio, words)
+                        del pending[task]
+
+                        # Prefetch next chunk if available
+                        next_to_fetch = max(pending.values()) + 1 if pending else next_to_assemble
+                        while len(pending) < _EDGE_CONCURRENCY and next_to_fetch < total:
+                            t = asyncio.create_task(_gen_edge_chunk(next_to_fetch, chunks[next_to_fetch]))
+                            pending[t] = next_to_fetch
+                            next_to_fetch += 1
+
+                    # Assemble consecutive results that are ready
+                    while next_to_assemble in result_buffer:
+                        i = next_to_assemble
+                        audio, words = result_buffer.pop(i)
+                        next_to_assemble += 1
+
+                        # Prefetch to keep pipeline full
+                        while len(pending) < _EDGE_CONCURRENCY and next_to_fetch < total:
+                            t = asyncio.create_task(_gen_edge_chunk(next_to_fetch, chunks[next_to_fetch]))
+                            pending[t] = next_to_fetch
+                            next_to_fetch += 1
+
+                        if not audio:
+                            skipped_chunks += 1
+                            logger.warning(
+                                "Skipping chunk %d/%d (no audio produced): %r",
+                                i + 1, total, chunks[i][:80],
+                            )
+                            continue
+
+                        raw_for_duration = audio
+                        if i > 0:
+                            audio = strip_id3v2(audio)
+                            raw_for_duration = audio
+
+                        with open(audio_path, "ab") as f:
+                            f.write(audio)
+                            f.flush()
+
+                        chunk_duration = mp3_duration_seconds(raw_for_duration)
+                        if chunk_duration <= 0:
+                            if words:
+                                chunk_duration = max((w["end"] for w in words), default=0.0)
+                            if chunk_duration <= 0:
+                                chunk_duration = 0.05
+
+                        new_cues = group_word_boundaries_to_cues(words, global_audio_sec, language)
+                        for cue in new_cues:
+                            cue_index += 1
+                            cue["index"] = cue_index
+
+                        cues_all.extend(new_cues)
+                        append_cues_jsonl(cache_id, new_cues)
+                        generation_status[cache_id]["subtitle_cues"] = len(cues_all)
+
+                        global_audio_sec += chunk_duration
+
+                        current_size = os.path.getsize(audio_path)
+                        generation_status[cache_id]["progress"] = i + 1
+
+                        # Save meta every 5 chunks or at the end
+                        if (i + 1) % 5 == 0 or i + 1 == total:
+                            save_cache_meta(
+                                cache_id,
+                                {
+                                    "status": "processing",
+                                    "progress": i + 1,
+                                    "total": total,
+                                    "current_file_size": current_size,
+                                    "text_hash": md5_short(text),
+                                    "voice": voice,
+                                    "engine": engine,
+                                    "language": language,
+                                    "subtitle_supported": True,
+                                    "subtitle_ready": False,
+                                    "subtitle_cues": len(cues_all),
+                                },
+                            )
+
+            # ── gTTS: sequential (CPU-bound via thread pool) ──
+            else:
+                for i, chunk_text in enumerate(chunks):
                     gtts_lang = GTTS_LANG_MAP.get(language, "en")
                     audio = await loop.run_in_executor(None, gtts_to_bytes, chunk_text, gtts_lang)
-                    words = []
 
-                if not audio:
-                    # Skip chunk that produced no audio (e.g. punctuation-only text,
-                    # or Edge TTS intermittent failure after retries exhausted).
-                    # Don't abort the entire generation — just log and continue.
-                    skipped_chunks += 1
-                    logger.warning(
-                        "Skipping chunk %d/%d (no audio produced): %r",
-                        i + 1, total, chunk_text[:80],
-                    )
-                    continue
+                    if not audio:
+                        skipped_chunks += 1
+                        logger.warning(
+                            "Skipping chunk %d/%d (no audio produced): %r",
+                            i + 1, total, chunk_text[:80],
+                        )
+                        continue
 
-                raw_for_duration = audio
-                if i > 0:
-                    audio = strip_id3v2(audio)
-                    raw_for_duration = audio
+                    if i > 0:
+                        audio = strip_id3v2(audio)
 
-                with open(audio_path, "ab") as f:
-                    f.write(audio)
-                    f.flush()
+                    with open(audio_path, "ab") as f:
+                        f.write(audio)
+                        f.flush()
 
-                chunk_duration = mp3_duration_seconds(raw_for_duration)
-                if chunk_duration <= 0:
-                    if words:
-                        chunk_duration = max((w["end"] for w in words), default=0.0)
-                    if chunk_duration <= 0:
-                        chunk_duration = 0.05
+                    current_size = os.path.getsize(audio_path)
+                    generation_status[cache_id]["progress"] = i + 1
 
-                if engine == "edge":
-                    new_cues = group_word_boundaries_to_cues(words, global_audio_sec, language)
-                    for cue in new_cues:
-                        cue_index += 1
-                        cue["index"] = cue_index
-
-                    cues_all.extend(new_cues)
-                    append_cues_jsonl(cache_id, new_cues)
-                    generation_status[cache_id]["subtitle_cues"] = len(cues_all)
-
-                global_audio_sec += chunk_duration
-
-                current_size = os.path.getsize(audio_path)
-                generation_status[cache_id]["progress"] = i + 1
-
-                save_cache_meta(
-                    cache_id,
-                    {
-                        "status": "processing",
-                        "progress": i + 1,
-                        "total": total,
-                        "current_file_size": current_size,
-                        "text_hash": md5_short(text),
-                        "voice": voice,
-                        "engine": engine,
-                        "language": language,
-                        "subtitle_supported": engine == "edge",
-                        "subtitle_ready": False,
-                        "subtitle_cues": len(cues_all),
-                    },
-                )
+                    if (i + 1) % 5 == 0 or i + 1 == total:
+                        save_cache_meta(
+                            cache_id,
+                            {
+                                "status": "processing",
+                                "progress": i + 1,
+                                "total": total,
+                                "current_file_size": current_size,
+                                "text_hash": md5_short(text),
+                                "voice": voice,
+                                "engine": engine,
+                                "language": language,
+                                "subtitle_supported": False,
+                                "subtitle_ready": False,
+                                "subtitle_cues": 0,
+                            },
+                        )
 
             final_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
             if final_size <= 0:
