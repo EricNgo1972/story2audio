@@ -9,7 +9,7 @@ provisioner pulls and runs per tenant, with the tenant's persistent volume mount
 | ----------------- | --------------------------------- |
 | `ImageRepository` | `ghcr.io/ericngo1972/story2audio` |
 | `ImageTag`        | the released version, e.g. `3.1.0` |
-| `InternalPort`    | `8000`                            |
+| `InternalPort`    | `8080`                            |
 | Volume mount      | `/data`                           |
 | Health endpoint   | `GET /health` → `{"ok":true,"version":"..."}` |
 | Replicas          | **1 per tenant** (see below)      |
@@ -27,7 +27,7 @@ always confirm which tag a running tenant is actually on.
 
 ## Runtime contract
 
-**Port.** The app listens on `$PORT` (default `8000`). Change it by setting `PORT`; `EXPOSE` and the
+**Port.** The app listens on `$PORT` (default `8080`). Change it by setting `PORT`; `EXPOSE` and the
 image healthcheck both follow it.
 
 **State.** Everything story2audio must keep — generated `.mp3`, plus the `.json` / `.srt` / `.vtt` /
@@ -47,7 +47,7 @@ this tenant must reach the TTS providers through an authenticated proxy.
 
 | Variable             | Default  | Notes |
 | -------------------- | -------- | ----- |
-| `PORT`               | `8000`   | Must match the catalog's `InternalPort`. |
+| `PORT`               | `8080`   | Must match the catalog's `InternalPort`. |
 | `HOST`               | `0.0.0.0`| Leave as-is. |
 | `CACHE_MAX_AGE_DAYS` | `30`     | Cache janitor; `0` disables it. See below. |
 | `PROXY`              | unset    | `http://user:pass@host:port`. Applied to both edge-tts and outbound HTTP. |
@@ -93,11 +93,11 @@ doesn't corrupt anything — every conversion is simply regenerated on next requ
 
 ```bash
 docker compose up -d --build
-curl -s localhost:8000/health          # {"ok":true,"version":"dev"}
+curl -s localhost:8080/health          # {"ok":true,"version":"dev"}
 docker compose logs -f app
 ```
 
-Then open `http://localhost:8000`, paste text, and confirm audio starts playing before generation
+Then open `http://localhost:8080`, paste text, and confirm audio starts playing before generation
 finishes — that is the end-to-end check that streaming survived the proxy path.
 
 To run a released image instead of building:

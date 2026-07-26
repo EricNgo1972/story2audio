@@ -7,7 +7,7 @@
 #   3. drop root and exec the server
 set -eu
 
-PORT="${PORT:-8000}"
+PORT="${PORT:-8080}"
 HOST="${HOST:-0.0.0.0}"
 APP_USER=story2audio
 

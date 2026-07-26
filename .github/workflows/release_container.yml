@@ -63,7 +63,7 @@ jobs:
         run: |
           echo "Pushed \`$IMAGE:${{ inputs.version }}\` and \`$IMAGE:latest\`" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Catalog row -> ImageRepository=$IMAGE, ImageTag=${{ inputs.version }}, InternalPort=8000" >> "$GITHUB_STEP_SUMMARY"
+          echo "Catalog row -> ImageRepository=$IMAGE, ImageTag=${{ inputs.version }}, InternalPort=8080" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Tenant volume mounts at \`/data\` (audio cache). Health endpoint: \`/health\`." >> "$GITHUB_STEP_SUMMARY"
           echo "Single replica per tenant — in-flight TTS job state is per-process." >> "$GITHUB_STEP_SUMMARY"

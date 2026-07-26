@@ -63,20 +63,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:${PATH}" \
     HOST=0.0.0.0 \
-    PORT=8000
+    PORT=8080
 
 # Baked at build time by the release workflow (--build-arg APP_VERSION=...); main.py:48 surfaces it
 # on /health, which is how you confirm which tag a running tenant is actually on.
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 
-# The port the provisioner maps to and health-checks. Keep this in sync with the catalog row's
-# InternalPort (see DEPLOY.md).
-EXPOSE 8000
+# Listen on 8080 inside the container — the fleet-wide container port the provisioner maps a
+# per-tenant host port to (same as MaplePOS). Keep in sync with the catalog row's InternalPort.
+EXPOSE 8080
 
 # Cheap liveness signal for the provisioner. Uses the interpreter that is already in the image
 # rather than pulling in curl. /health is a plain JSON handler with no TTS work behind it.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD ["python", "-c", "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8000')+'/health', timeout=4).status==200 else 1)"]
+  CMD ["python", "-c", "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ.get('PORT','8080')+'/health', timeout=4).status==200 else 1)"]
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/docker-entrypoint.sh"]

@@ -21,12 +21,12 @@ services:
         required: false
     environment:
       TZ: Asia/Tokyo
-      PORT: "8000"
+      PORT: "8080"
       # Prune cached audio older than this. 0 keeps everything (and fills the volume eventually).
       CACHE_MAX_AGE_DAYS: "30"
 
     ports:
-      - "${HOST_PORT:-8000}:8000"
+      - "${HOST_PORT:-8080}:8080"
 
     # The tenant's persistent state. /app/audio_cache inside the image is a symlink to /data, so
     # every mp3/srt/vtt/cue file the app writes lands on this volume and survives redeploys.
