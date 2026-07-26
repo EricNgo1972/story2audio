@@ -32,13 +32,16 @@ RUN uv sync --frozen --no-dev
 # ---------------------------------------------------------------------------
 FROM python:3.13-slim
 
-# gosu lets the entrypoint fix /data ownership as root and then drop to an unprivileged user.
 # tini reaps zombies and forwards SIGTERM so `docker stop` doesn't sit through the 10s timeout.
+#
+# Deliberately NO unprivileged user and no gosu: the container runs as root, exactly like MaplePOS.
+# The provisioner creates and owns the tenant's host directory (e.g. /var/lib/maplekiosk/tts) and
+# manages its permissions itself. An earlier revision chowned /data on startup to support running
+# unprivileged, which rewrote the ownership of the bind-mounted host directory out from under the
+# provisioner and broke its redeploy with "chmod: Operation not permitted". Leave /data alone.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends gosu tini \
+ && apt-get install -y --no-install-recommends tini \
  && rm -rf /var/lib/apt/lists/*
-
-RUN useradd --system --create-home --uid 10001 story2audio
 
 WORKDIR /app
 
@@ -54,10 +57,8 @@ RUN mkdir -p /data && ln -s /data /app/audio_cache
 COPY --from=build /app/.venv /app/.venv
 COPY . /app
 
-# COPY brought in the repo's own docker-compose/README/etc. and reset ownership; the entrypoint is
-# the only file that needs the executable bit.
-RUN chmod +x /app/docker-entrypoint.sh \
- && chown -R story2audio:story2audio /app
+# The entrypoint is the only file that needs the executable bit.
+RUN chmod +x /app/docker-entrypoint.sh
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

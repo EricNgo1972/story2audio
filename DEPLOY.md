@@ -36,9 +36,10 @@ location (`main.py:53`) and cannot be configured. The image symlinks `/app/audio
 mounting the tenant volume at `/data` captures all of it with no app change. Nothing else in the
 container is worth persisting.
 
-**Permissions.** The container starts as root only long enough to `chown /data`, then drops to the
-unprivileged `story2audio` user (uid 10001) via `gosu`. That covers both an empty named volume
-(root-owned on first mount) and a host bind mount.
+**Permissions.** The container runs as root, like MaplePOS, and deliberately never chowns or
+chmods `/data`. The provisioner creates the tenant's host directory, owns it, and manages its
+permissions; writing to that ownership from inside the container breaks the provisioner's next
+CreateVolume step with `chmod: Operation not permitted`.
 
 **Secrets.** None required. `PROXY` (see `.env.example`) is the only sensitive variable, and only if
 this tenant must reach the TTS providers through an authenticated proxy.
