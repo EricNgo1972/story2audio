@@ -1,25 +1,54 @@
+# Standalone / single-host run. The fleet provisioner does the equivalent with `docker run` from a
+# catalog row (see DEPLOY.md) — this file is for local verification and one-off hosts.
+#
+#   docker compose up -d --build        build from source
+#   IMAGE_TAG=3.1.0 docker compose up -d --pull always --no-build   run a released GHCR image
+
 services:
   app:
+    image: ghcr.io/ericngo1972/story2audio:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${IMAGE_TAG:-dev}
     container_name: story2audio
     restart: unless-stopped
+
+    # PROXY / ENABLE_DEBUG_TTS live here if you need them; see .env.example.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       TZ: Asia/Tokyo
-      PYTHONUNBUFFERED: "1"
-    expose:
-      - "8000"
+      PORT: "8000"
+      # Prune cached audio older than this. 0 keeps everything (and fills the volume eventually).
+      CACHE_MAX_AGE_DAYS: "30"
+
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+
+    # The tenant's persistent state. /app/audio_cache inside the image is a symlink to /data, so
+    # every mp3/srt/vtt/cue file the app writes lands on this volume and survives redeploys.
     volumes:
-      - story2audio_cache:/app/audio_cache
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+      - story2audio_data:/data
+
+    # Healthcheck comes from the image (HEALTHCHECK on /health) — no override needed here.
+
+    # Long texts spawn many concurrent edge-tts websocket connections; the cap keeps one busy tenant
+    # from starving its neighbours on a shared host. Raise if you see conversions crawling.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1g
+
+    # Container logs are the only trace of failed conversions; keep them bounded.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
-  story2audio_cache:
+  story2audio_data:

@@ -1,5 +1,9 @@
 name: Build & Deploy
 
+# Continuous build on every push to main. Publishes :edge and :<sha> only — :latest is owned by
+# release_container.yml so that it always points at a deliberately cut version rather than whatever
+# landed on main last. Pin catalog rows to a version tag, not to either of these.
+
 on:
   push:
     branches: [main]
@@ -36,7 +40,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=sha,prefix=
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=edge,enable={{is_default_branch}}
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -44,6 +48,8 @@ jobs:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            APP_VERSION=edge-${{ github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
