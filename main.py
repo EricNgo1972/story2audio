@@ -45,7 +45,7 @@ if sys.platform == "win32":
 # ---------------------------------------------------------------------------
 # Directories & Setup
 # ---------------------------------------------------------------------------
-VERSION = os.environ.get("APP_VERSION", "v3.1.0")
+VERSION = os.environ.get("APP_VERSION", "v3.1.1")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")

@@ -5,7 +5,7 @@ description = "Ứng dụng FastAPI chuyển văn bản thành audio MP3 với s
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-  "edge-tts>=7.2.8",
+  "edge-tts>=7.3.1",
   "fastapi>=0.115.0",
   "gtts>=2.5.4",
   "python-dotenv>=1.1.0",
